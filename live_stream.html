@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Streaming - Garbage Monitoring System</title>
+    <link rel="stylesheet" href="styles.css">
+    
+    <!-- TensorFlow.js & Model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet"></script>
+</head>
+<body>
+    <header>
+        <h1>Garbage Monitoring System</h1>
+        <nav>
+            <ul>
+                <li><a href="dashboard.html">Dashboard</a></li>
+                <li><a href="data_logs.html">Data Logs</a></li>
+                <li><a href="live_stream.html">Live Streaming</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section id="live-stream">
+            <h2>Live Streaming</h2>
+            <div id="video-container">
+                <video id="camera-feed" autoplay playsinline></video>
+                <canvas id="processed-canvas"></canvas>
+            </div>
+            <button id="start-camera">Start Camera</button>
+            <button id="stop-camera" disabled>Stop Camera</button>
+            
+            <div id="sorting-status">Status: <span id="status-text">Loading model...</span></div>
+            <div id="predictions-display"></div> <!-- Added to display predictions -->
+
+            <div id="alerts">
+               <!-- Visual Alert Section -->
+                <section id="alert-section">
+                    <h3>Sorting Alerts</h3>
+                    <div id="visual-alert" class="hidden" aria-live="assertive">⚠ Incorrect Sorting Detected!</div>
+                </section>
+                <audio id="audio-alert" src="alert.mp3"></audio>
+            </div>
+
+            <div id="camera-error" class="hidden">⚠ Camera access denied or unavailable.</div>
+        </section>
+
+        <!-- Image Upload Section -->
+        <section id="image-upload-section">
+            <h3>Upload Image for Detection</h3>
+            <input type="file" id="image-upload" accept="image/*">
+            <canvas id="uploaded-canvas"></canvas>
+        </section>
+    </main>
+
+    <script>
+        let video = document.getElementById("camera-feed");
+        let canvas = document.getElementById("processed-canvas");
+        let ctx = canvas.getContext("2d");
+        let statusText = document.getElementById("status-text");
+        let visualAlert = document.getElementById("visual-alert");
+        let audioAlert = document.getElementById("audio-alert");
+        let startButton = document.getElementById("start-camera");
+        let stopButton = document.getElementById("stop-camera");
+        let predictionsDisplay = document.getElementById("predictions-display");
+        let stream = null;
+        let model;
+
+        // Load TensorFlow.js Model
+        async function loadModel() {
+            console.log("Loading TensorFlow model...");
+            statusText.innerText = "Loading TensorFlow model...";
+            try {
+                model = await mobilenet.load();  // Load MobileNet model
+                console.log("TensorFlow.js model loaded!");
+                statusText.innerText = "Model Loaded. Ready!";
+            } catch (error) {
+                console.error("Error loading model:", error);
+                statusText.innerText = "Failed to load model.";
+            }
+        }
+
+        // Check if the detected object is valid garbage
+        function checkSorting(predictions) {
+            const validMaterials = {
+                plastic: ["plastic", "bottle", "container"],
+                paper: ["paper", "cardboard"],
+                metal: ["metal", "can", "aluminum"],
+                glass: ["glass", "bottle"],
+                textiles: ["textile", "fabric", "cloth"],
+                rubber: ["rubber", "tire"]
+            };
+
+            let isValid = predictions.some(prediction => {
+                let className = prediction.className.toLowerCase();
+                return Object.values(validMaterials).some(materials => 
+                    materials.some(material => className.includes(material))
+                );
+            });
+
+            return isValid;
+        }
+
+        // Display predictions on the screen
+        function displayPredictions(predictions) {
+            predictionsDisplay.innerHTML = predictions
+                .map(prediction => `
+                    <div>
+                        <strong>${prediction.className}</strong>: ${(prediction.probability * 100).toFixed(2)}%
+                    </div>
+                `)
+                .join("");
+        }
+
+        // Store sorting logs in localStorage
+        function storeSortingLog(timestamp, status) {
+            let logs = JSON.parse(localStorage.getItem('sortingLogs')) || [];
+            logs.push({ timestamp, status });
+            localStorage.setItem('sortingLogs', JSON.stringify(logs));
+        }
+
+        // Process camera feed for detection
+        async function processVideo() {
+            if (!video.videoWidth || !model) {
+                console.log("Video or model not ready. Skipping frame.");
+                return;
+            }
+
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Get predictions
+            const predictions = await model.classify(canvas);
+            console.log("Predictions:", predictions);
+
+            let sortingStatus = checkSorting(predictions);
+            let currentTime = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+
+            // Update UI
+            statusText.innerText = sortingStatus ? "Correct Sorting" : "Incorrect Sorting";
+            displayPredictions(predictions);
+
+            // Store log in localStorage
+            storeSortingLog(currentTime, sortingStatus ? "Correct Sorting" : "Incorrect Sorting");
+
+            // Trigger alert if sorting is incorrect
+            if (!sortingStatus) {
+                visualAlert.classList.remove("hidden");
+                visualAlert.classList.add("flash-alert");
+                audioAlert.play();
+
+                // Hide the visual alert after 15 seconds
+                setTimeout(() => {
+                    visualAlert.classList.remove("flash-alert");
+                    visualAlert.classList.add("hidden");
+                }, 15000);
+            } else {
+                visualAlert.classList.remove("flash-alert");
+                visualAlert.classList.add("hidden");
+            }
+
+            // Reduce frame rate for efficiency
+            setTimeout(() => requestAnimationFrame(processVideo), 500);
+        }
+
+        // Start the camera feed
+        startButton.addEventListener("click", () => {
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then(mediaStream => {
+                    stream = mediaStream;
+                    video.srcObject = stream;
+                    startButton.disabled = true;
+                    stopButton.disabled = false;
+                    processVideo();
+                })
+                .catch(error => {
+                    console.error("Camera access error:", error);
+                    document.getElementById("camera-error").classList.remove("hidden");
+                    statusText.innerText = "Camera access denied or unavailable.";
+                });
+        });
+
+        // Stop the camera feed
+        stopButton.addEventListener("click", () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            startButton.disabled = false;
+            stopButton.disabled = true;
+        });
+
+        // Load the model when the page loads
+        window.onload = loadModel;
+
+        // Image upload handler
+        document.getElementById('image-upload').addEventListener('change', async (event) => {
+            let file = event.target.files[0];
+            if (!file.type.startsWith('image/')) {
+                alert("Please upload a valid image file.");
+                return;
+            }
+
+            let img = new Image();
+            img.onload = async () => {
+                let uploadedCanvas = document.getElementById('uploaded-canvas');
+                let uploadedCtx = uploadedCanvas.getContext('2d');
+                uploadedCanvas.width = img.width;
+                uploadedCanvas.height = img.height;
+                uploadedCtx.drawImage(img, 0, 0);
+
+                const predictions = await model.classify(uploadedCanvas);
+                console.log("Uploaded image predictions:", predictions);
+
+                let sortingStatus = checkSorting(predictions);
+                let currentTime = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+                statusText.innerText = sortingStatus ? "Correct Sorting" : "Incorrect Sorting";
+                displayPredictions(predictions);
+
+                storeSortingLog(currentTime, sortingStatus ? "Correct Sorting" : "Incorrect Sorting");
+
+                if (!sortingStatus) {
+                    visualAlert.classList.add("flash-alert");
+                    audioAlert.play();
+
+                    setTimeout(() => {
+                        visualAlert.classList.remove("flash-alert");
+                        visualAlert.classList.add("hidden");
+                    }, 15000);
+                } else {
+                    visualAlert.classList.remove("flash-alert");
+                }
+            };
+            img.src = URL.createObjectURL(file);
+        });
+    </script>
+    <footer>
+        <p>&copy; 2025 Garbage Monitoring System. All rights reserved.</p>
+    </footer>
+</body>
+</html>
